@@ -1,0 +1,71 @@
+name: passivbot-backtest-1000
+
+on:
+  workflow_dispatch:
+    inputs:
+      start_date:
+        description: "Backtest start (YYYY-MM-DD)"
+        default: "2024-01-01"
+      end_date:
+        description: "Backtest end (YYYY-MM-DD)"
+        default: "2026-01-01"
+
+permissions:
+  contents: read
+
+env:
+  PB_VERSION: v8.1.0
+  CONFIG: configs/my_config.json   # your config in this repo (no keys inside)
+  STARTING_BALANCE: "1000"
+
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Get Passivbot (full profile for backtest)
+        run: |
+          git clone --depth 1 --branch "$PB_VERSION" https://github.com/enarjord/passivbot.git ~/passivbot
+          cd ~/passivbot
+          python -m pip install -e ".[full]"
+
+      - name: Set balance and dates in config
+        env:
+          START: ${{ inputs.start_date }}
+          END: ${{ inputs.end_date }}
+        run: |
+          python - <<'PY'
+          import json, os
+          p = os.path.join(os.environ["GITHUB_WORKSPACE"], os.environ["CONFIG"])
+          c = json.load(open(p))
+          b = c.setdefault("backtest", {})
+          b["starting_balance"] = float(os.environ["STARTING_BALANCE"])
+          b["start_date"] = os.environ["START"]
+          b["end_date"] = os.environ["END"]
+          json.dump(c, open("/tmp/bt_config.json", "w"), indent=2)
+          print(json.dumps(b, indent=2))
+          PY
+
+      - name: Run backtest
+        run: |
+          cd ~/passivbot
+          # VERIFY the exact CLI for your version in docs/backtesting.md
+          passivbot backtest /tmp/bt_config.json
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backtest-results
+          path: |
+            ~/passivbot/backtests/
+            ~/passivbot/logs/
+          retention-days: 14
+          if-no-files-found: ignore
