@@ -7,14 +7,17 @@ on:
         description: "Backtest start (YYYY-MM-DD)"
         default: "2024-01-01"
       end_date:
-        description: "Backtest end (YYYY-MM-DD)"
-        default: "2026-01-01"
+        description: "Backtest end (YYYY-MM-DD or now)"
+        default: "now"
+      exchanges:
+        description: "Data exchanges, comma-separated (e.g. bybit or binance,bybit)"
+        default: "bybit"
 
 permissions:
   contents: read
 
 env:
-  PB_VERSION: v8.1.0
+  PB_VERSION: master   # must be >= your config_version (v8.6.0); pin to a release tag once verified
   CONFIG: configs/my_config.json   # your config in this repo (no keys inside)
   STARTING_BALANCE: "1000"
 
@@ -40,6 +43,7 @@ jobs:
         env:
           START: ${{ inputs.start_date }}
           END: ${{ inputs.end_date }}
+          EXCHANGES: ${{ inputs.exchanges }}
         run: |
           python - <<'PY'
           import json, os
@@ -49,6 +53,8 @@ jobs:
           b["starting_balance"] = float(os.environ["STARTING_BALANCE"])
           b["start_date"] = os.environ["START"]
           b["end_date"] = os.environ["END"]
+          b["exchanges"] = [x.strip() for x in os.environ["EXCHANGES"].split(",") if x.strip()]
+          b["suite_enabled"] = False   # single run, not the 7 scenarios
           json.dump(c, open("/tmp/bt_config.json", "w"), indent=2)
           print(json.dumps(b, indent=2))
           PY
