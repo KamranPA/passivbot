@@ -82,4 +82,4 @@ jobs:
             ~/passivbot/backtests/
             ~/passivbot/logs/
           retention-days: 14
-          if-no-files-found: ignoreج
+          if-no-files-found: ignore
