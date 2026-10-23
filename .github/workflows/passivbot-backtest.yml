@@ -43,7 +43,9 @@ jobs:
           . .venv/bin/activate
           python -m pip install -U pip maturin
           python -m pip install -e ".[full]"
-          maturin develop --release   # build the Rust extension now, inside the venv
+          CARGO=$(find . -name Cargo.toml -not -path "./.venv/*" -not -path "*/target/*" | head -n1)
+          echo "Using $CARGO"
+          maturin develop --release -m "$CARGO"   # build the Rust extension inside the venv
 
       - name: Set balance and dates in config
         env:
@@ -80,4 +82,4 @@ jobs:
             ~/passivbot/backtests/
             ~/passivbot/logs/
           retention-days: 14
-          if-no-files-found: ignore
+          if-no-files-found: ignoreج
