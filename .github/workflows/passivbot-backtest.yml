@@ -1,30 +1,76 @@
-name: passivbot-backtest-1000
+name: passivbot-backtest-windows
 
 on:
   workflow_dispatch:
     inputs:
       start_date:
-        description: "Backtest start (YYYY-MM-DD)"
+        description: "Overall start (YYYY-MM-DD)"
         default: "2024-01-01"
       end_date:
-        description: "Backtest end (YYYY-MM-DD or now)"
+        description: "Overall end (YYYY-MM-DD or now)"
         default: "now"
+      window_months:
+        description: "Length of each window in months"
+        default: "3"
       exchanges:
-        description: "Data exchanges, comma-separated (e.g. bybit or binance,bybit)"
-        default: "bybit"
+        description: "Data exchanges, comma-separated"
+        default: "okx"
+      coins:
+        description: "Optional: limit coins, comma-separated (e.g. BTC,ETH,SOL). Empty = config as is"
+        default: ""
 
 permissions:
   contents: read
 
 env:
-  PB_VERSION: master   # must be >= your config_version (v8.6.0); pin to a release tag once verified
-  CONFIG: configs/my_config.json   # your config in this repo (no keys inside)
+  PB_VERSION: master   # must be >= config_version v8.6.0; pin to a release tag once verified
+  CONFIG: configs/my_config.json
   STARTING_BALANCE: "1000"
 
 jobs:
-  backtest:
+  plan:
     runs-on: ubuntu-latest
-    timeout-minutes: 350
+    outputs:
+      windows: ${{ steps.mk.outputs.windows }}
+    steps:
+      - id: mk
+        env:
+          START: ${{ inputs.start_date }}
+          END: ${{ inputs.end_date }}
+          MONTHS: ${{ inputs.window_months }}
+        run: |
+          python3 - <<'PY'
+          import os, json, calendar, datetime as dt
+
+          def add_months(d, n):
+              y = d.year + (d.month - 1 + n) // 12
+              m = (d.month - 1 + n) % 12 + 1
+              return dt.date(y, m, min(d.day, calendar.monthrange(y, m)[1]))
+
+          start = dt.date.fromisoformat(os.environ["START"])
+          end_s = os.environ["END"].strip().lower()
+          end = dt.date.today() if end_s == "now" else dt.date.fromisoformat(end_s)
+          n = max(1, int(os.environ["MONTHS"]))
+
+          wins, cur = [], start
+          while cur < end and len(wins) < 60:
+              nxt = min(add_months(cur, n), end)
+              wins.append({"start": cur.isoformat(), "end": nxt.isoformat()})
+              cur = nxt
+          print(json.dumps(wins, indent=1))
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write("windows=" + json.dumps(wins) + "\n")
+          PY
+
+  backtest:
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        window: ${{ fromJSON(needs.plan.outputs.windows) }}
     steps:
       - uses: actions/checkout@v4
 
@@ -45,13 +91,14 @@ jobs:
           python -m pip install -e ".[full]"
           CARGO=$(find . -name Cargo.toml -not -path "./.venv/*" -not -path "*/target/*" | head -n1)
           echo "Using $CARGO"
-          maturin develop --release -m "$CARGO"   # build the Rust extension inside the venv
+          maturin develop --release -m "$CARGO"
 
-      - name: Set balance and dates in config
+      - name: Set balance, dates, exchanges in config
         env:
-          START: ${{ inputs.start_date }}
-          END: ${{ inputs.end_date }}
+          START: ${{ matrix.window.start }}
+          END: ${{ matrix.window.end }}
           EXCHANGES: ${{ inputs.exchanges }}
+          COINS: ${{ inputs.coins }}
         run: |
           python - <<'PY'
           import json, os
@@ -62,22 +109,24 @@ jobs:
           b["start_date"] = os.environ["START"]
           b["end_date"] = os.environ["END"]
           b["exchanges"] = [x.strip() for x in os.environ["EXCHANGES"].split(",") if x.strip()]
-          b["suite_enabled"] = False   # single run, not the 7 scenarios
+          b["suite_enabled"] = False
+          coins = [x.strip().upper() for x in os.environ["COINS"].split(",") if x.strip()]
+          if coins:
+              c.setdefault("live", {})["approved_coins"] = {"long": coins, "short": []}
           json.dump(c, open("/tmp/bt_config.json", "w"), indent=2)
-          print(json.dumps(b, indent=2))
+          print(json.dumps({k: b[k] for k in ("starting_balance","start_date","end_date","exchanges")}))
           PY
 
-      - name: Run backtest
+      - name: Run backtest (stops before the job limit so results can be uploaded)
         run: |
           cd ~/passivbot
-          # VERIFY the exact CLI for your version in docs/backtesting.md
-          passivbot backtest /tmp/bt_config.json
+          timeout --signal=SIGINT 20000 passivbot backtest /tmp/bt_config.json
 
       - name: Upload results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: backtest-results
+          name: backtest-${{ matrix.window.start }}_${{ matrix.window.end }}
           path: |
             ~/passivbot/backtests/
             ~/passivbot/logs/
