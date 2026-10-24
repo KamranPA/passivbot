@@ -5,7 +5,7 @@ on:
     inputs:
       start_date:
         description: "Overall start (YYYY-MM-DD)"
-        default: "2024-01-01"
+        default: "2026-01-01"
       end_date:
         description: "Overall end (YYYY-MM-DD or now)"
         default: "now"
@@ -17,6 +17,18 @@ on:
         default: "okx"
       coins:
         description: "Optional: limit coins, comma-separated (e.g. BTC,ETH,SOL). Empty = config as is"
+        default: ""
+      n_positions:
+        description: "Max simultaneous open positions (long). Empty = config as is (7)"
+        default: ""
+      twe:
+        description: "total_wallet_exposure_limit (long), e.g. 1 or 0.8. Empty = config as is (1.5)"
+        default: ""
+      hsl:
+        description: "Equity hard-stop on long side: true / false. Empty = config as is (false)"
+        default: ""
+      label:
+        description: "Name tag added to result file names (e.g. base, hsl-twe1)"
         default: ""
 
 permissions:
@@ -99,6 +111,9 @@ jobs:
           END: ${{ matrix.window.end }}
           EXCHANGES: ${{ inputs.exchanges }}
           COINS: ${{ inputs.coins }}
+          NPOS: ${{ inputs.n_positions }}
+          TWE: ${{ inputs.twe }}
+          HSL: ${{ inputs.hsl }}
         run: |
           python - <<'PY'
           import json, os
@@ -113,8 +128,23 @@ jobs:
           coins = [x.strip().upper() for x in os.environ["COINS"].split(",") if x.strip()]
           if coins:
               c.setdefault("live", {})["approved_coins"] = {"long": coins, "short": []}
+          npos = os.environ.get("NPOS", "").strip()
+          if npos:
+              risk = c.setdefault("bot", {}).setdefault("long", {}).setdefault("risk", {})
+              risk["n_positions"] = float(npos)
+          twe = os.environ.get("TWE", "").strip()
+          if twe:
+              c["bot"]["long"]["risk"]["total_wallet_exposure_limit"] = float(twe)
+          hsl = os.environ.get("HSL", "").strip().lower()
+          if hsl in ("true", "false"):
+              c["bot"]["long"]["hsl"]["enabled"] = (hsl == "true")
           json.dump(c, open("/tmp/bt_config.json", "w"), indent=2)
           print(json.dumps({k: b[k] for k in ("starting_balance","start_date","end_date","exchanges")}))
+          L = c["bot"]["long"]
+          print("long n_positions =", L["risk"]["n_positions"],
+                "| TWE =", L["risk"]["total_wallet_exposure_limit"],
+                "| hsl enabled =", L["hsl"]["enabled"],
+                "| hsl red_threshold =", L["hsl"]["red_threshold"])
           PY
 
       - name: Run backtest (stops before the job limit so results can be uploaded)
@@ -126,7 +156,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: backtest-${{ matrix.window.start }}_${{ matrix.window.end }}
+          name: backtest${{ inputs.label && format('-{0}', inputs.label) || '' }}-${{ matrix.window.start }}_${{ matrix.window.end }}
           path: |
             ~/passivbot/backtests/
             ~/passivbot/logs/
