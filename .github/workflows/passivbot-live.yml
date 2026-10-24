@@ -1,22 +1,21 @@
-name: passivbot-live
+name: passivbot-live-okx
 
+# Start manually from the Actions tab. Each run lasts ~5h45m, then starts the next one.
+# No cron on purpose: cancelling the run (or disabling this workflow) really stops the chain.
 on:
-  workflow_dispatch:        # manual start + self-relaunch
-  schedule:
-    - cron: "*/30 * * * *"  # safety net if the chain ever breaks
+  workflow_dispatch:
 
-# Only one run at a time; a new run waits for the current one (never cancels it)
 concurrency:
   group: passivbot-live
   cancel-in-progress: false
 
 permissions:
   contents: read
-  actions: write            # needed to relaunch this workflow
+  actions: write
 
 env:
   PB_VERSION: master        # must be >= config_version v8.6.0; pin a release tag once verified
-  PB_USER: myuser           # name used in api-keys.json
+  PB_USER: okx_01           # account name; written into live.user of the config
   RUN_SECONDS: "20700"      # 5h45m
 
 jobs:
@@ -24,7 +23,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 355
     steps:
-      - uses: actions/checkout@v4          # your repo: holds your config file
+      - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
         with:
@@ -35,29 +34,54 @@ jobs:
         run: |
           git clone --depth 1 --branch "$PB_VERSION" https://github.com/enarjord/passivbot.git ~/passivbot
           cd ~/passivbot
-          python -m pip install -e .       # live-only profile (see docs/installation.md)
+          python -m venv .venv
+          echo "VIRTUAL_ENV=$PWD/.venv" >> "$GITHUB_ENV"
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+          . .venv/bin/activate
+          python -m pip install -U pip maturin
+          python -m pip install -e .
+          CARGO=$(find . -name Cargo.toml -not -path "./.venv/*" -not -path "*/target/*" | head -n1)
+          echo "Using $CARGO"
+          maturin develop --release -m "$CARGO"
 
       - name: Write API keys (from Secrets)
         env:
-          EXCHANGE: ${{ secrets.PB_EXCHANGE }}
           API_KEY: ${{ secrets.PB_API_KEY }}
           API_SECRET: ${{ secrets.PB_API_SECRET }}
+          API_PASSPHRASE: ${{ secrets.PB_API_PASSPHRASE }}
         run: |
           python - <<'PY'
           import json, os
           d = {os.environ["PB_USER"]: {
-              "exchange": os.environ["EXCHANGE"],
+              "exchange": "okx",
               "key": os.environ["API_KEY"],
-              "secret": os.environ["API_SECRET"]}}
-          json.dump(d, open(os.path.expanduser("~/passivbot/api-keys.json"), "w"))
+              "secret": os.environ["API_SECRET"],
+              "passphrase": os.environ["API_PASSPHRASE"]}}
+          path = os.path.expanduser("~/passivbot/api-keys.json")
+          with open(path, "w") as f:
+              json.dump(d, f)
+          os.chmod(path, 0o600)
+          PY
+
+      - name: Prepare live config
+        run: |
+          python - <<'PY'
+          import json, os
+          p = os.path.join(os.environ["GITHUB_WORKSPACE"], "configs/my_config.json")
+          c = json.load(open(p))
+          c.setdefault("live", {})["user"] = os.environ["PB_USER"]
+          json.dump(c, open("/tmp/live_config.json", "w"), indent=2)
+          r = c["bot"]["long"]["risk"]
+          print("user:", c["live"]["user"], "| leverage:", c["live"].get("leverage"),
+                "| n_positions:", r["n_positions"], "| TWE:", r["total_wallet_exposure_limit"],
+                "| hsl enabled:", c["bot"]["long"]["hsl"]["enabled"])
           PY
 
       - name: Run bot until time is up
         run: |
           cd ~/passivbot
-          # VERIFY the exact CLI/config path in the docs for your version
-          timeout --signal=SIGINT "$RUN_SECONDS" \
-            passivbot live -u "$PB_USER" "$GITHUB_WORKSPACE/configs/my_config.json" || true
+          # VERIFY the exact CLI for your version in the docs
+          timeout --signal=SIGINT "$RUN_SECONDS" passivbot live /tmp/live_config.json || true
 
       - name: Upload logs
         if: always()
@@ -70,7 +94,7 @@ jobs:
 
   relaunch:
     needs: run
-    if: always()
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     steps:
       - name: Start next run
