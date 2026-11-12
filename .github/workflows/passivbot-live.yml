@@ -1,9 +1,17 @@
 name: passivbot-live-okx
 
-# Start manually from the Actions tab. Each run lasts ~5h45m, then starts the next one.
+# Start manually from the Actions tab. Each run lasts ~5h45m, then starts the next one
+# ONLY if the bot ran a normal full session. A crash stops the chain and sends an alert.
 # No cron on purpose: cancelling the run (or disabling this workflow) really stops the chain.
+#
+# Uses the code in THIS repository (your fork), not upstream master.
+# Optional secrets for alerts: TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID.
 on:
   workflow_dispatch:
+    inputs:
+      config:
+        description: "Config file in this repo"
+        default: "configs/my_config_safe.json"
 
 concurrency:
   group: passivbot-live
@@ -14,35 +22,31 @@ permissions:
   actions: write
 
 env:
-  PB_VERSION: master        # must be >= config_version v8.6.0; pin a release tag once verified
   PB_USER: okx_01           # account name; written into live.user of the config
   RUN_SECONDS: "20700"      # 5h45m
+  WORKFLOW_FILE: passivbot-live.yml
 
 jobs:
   run:
     runs-on: ubuntu-latest
     timeout-minutes: 355
+    outputs:
+      status: ${{ steps.bot.outputs.status }}
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-          cache: pip
 
-      - name: Get Passivbot
+      - name: Install Passivbot from this repository
         run: |
-          git clone --depth 1 --branch "$PB_VERSION" https://github.com/enarjord/passivbot.git ~/passivbot
-          cd ~/passivbot
           python -m venv .venv
-          echo "VIRTUAL_ENV=$PWD/.venv" >> "$GITHUB_ENV"
           echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
           . .venv/bin/activate
           python -m pip install -U pip maturin
           python -m pip install -e .
-          CARGO=$(find . -name Cargo.toml -not -path "./.venv/*" -not -path "*/target/*" | head -n1)
-          echo "Using $CARGO"
-          maturin develop --release -m "$CARGO"
+          echo "Passivbot commit: $(git rev-parse HEAD)"
 
       - name: Write API keys (from Secrets)
         env:
@@ -57,47 +61,83 @@ jobs:
               "key": os.environ["API_KEY"],
               "secret": os.environ["API_SECRET"],
               "passphrase": os.environ["API_PASSPHRASE"]}}
-          path = os.path.expanduser("~/passivbot/api-keys.json")
-          with open(path, "w") as f:
+          with open("api-keys.json", "w") as f:
               json.dump(d, f)
-          os.chmod(path, 0o600)
+          os.chmod("api-keys.json", 0o600)
           PY
 
       - name: Prepare live config
+        env:
+          CONFIG: ${{ inputs.config }}
         run: |
           python - <<'PY'
           import json, os
-          p = os.path.join(os.environ["GITHUB_WORKSPACE"], "configs/my_config.json")
-          c = json.load(open(p))
+          c = json.load(open(os.environ["CONFIG"]))
           c.setdefault("live", {})["user"] = os.environ["PB_USER"]
           json.dump(c, open("/tmp/live_config.json", "w"), indent=2)
           r = c["bot"]["long"]["risk"]
-          print("user:", c["live"]["user"], "| leverage:", c["live"].get("leverage"),
+          print("config:", os.environ["CONFIG"], "| user:", c["live"]["user"],
+                "| leverage:", c["live"].get("leverage"),
                 "| n_positions:", r["n_positions"], "| TWE:", r["total_wallet_exposure_limit"],
                 "| hsl enabled:", c["bot"]["long"]["hsl"]["enabled"])
           PY
+          python scripts/check_okx_coins.py /tmp/live_config.json
 
       - name: Run bot until time is up
+        id: bot
         run: |
-          cd ~/passivbot
-          # VERIFY the exact CLI for your version in the docs
-          timeout --signal=SIGINT "$RUN_SECONDS" passivbot live /tmp/live_config.json || true
+          start=$(date +%s)
+          set +e
+          timeout --signal=SIGINT "$RUN_SECONDS" passivbot live /tmp/live_config.json
+          code=$?
+          set -e
+          elapsed=$(( $(date +%s) - start ))
+          echo "exit code: $code, elapsed: ${elapsed}s"
+          # timeout returns 124 when the time limit was reached = normal full session
+          if [ "$code" -eq 124 ] || { [ "$code" -eq 0 ] && [ "$elapsed" -ge "$RUN_SECONDS" ]; }; then
+            echo "status=ok" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=crashed" >> "$GITHUB_OUTPUT"
+            echo "::error::Bot exited early (code $code after ${elapsed}s)"
+          fi
 
       - name: Upload logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: logs-${{ github.run_id }}
-          path: ~/passivbot/logs/
+          path: logs/
           retention-days: 3
           if-no-files-found: ignore
 
   relaunch:
     needs: run
-    if: ${{ !cancelled() }}
+    if: ${{ !cancelled() && needs.run.outputs.status == 'ok' }}
     runs-on: ubuntu-latest
     steps:
       - name: Start next run
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh workflow run passivbot.yml --repo "$GITHUB_REPOSITORY" --ref "$GITHUB_REF_NAME"
+          CONFIG: ${{ inputs.config }}
+        run: |
+          gh workflow run "$WORKFLOW_FILE" --repo "$GITHUB_REPOSITORY" \
+            --ref "$GITHUB_REF_NAME" -f config="$CONFIG"
+
+  alert:
+    needs: [run, relaunch]
+    if: ${{ always() && !cancelled() && needs.run.outputs.status != 'ok' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Telegram alert (chain stopped)
+        env:
+          TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          CHAT: ${{ secrets.TELEGRAM_CHAT_ID }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          msg="passivbot-live STOPPED. Bot crashed or job failed; chain NOT restarted. Check open positions on OKX. $RUN_URL"
+          if [ -n "$TOKEN" ] && [ -n "$CHAT" ]; then
+            curl -fsS -X POST "https://api.telegram.org/bot${TOKEN}/sendMessage" \
+              -d chat_id="$CHAT" --data-urlencode text="$msg" >/dev/null
+          else
+            echo "::warning::No Telegram secrets set. $msg"
+          fi
