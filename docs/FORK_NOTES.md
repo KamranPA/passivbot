@@ -24,3 +24,10 @@ To separate the effect of HSL from the exposure cap:
 - `configs/my_config_safe_hsl25.json`: safe config with long HSL red_threshold 0.15 -> 0.25.
 Run the backtest workflow with the same windows and labels `safe_nohsl` / `safe_hsl25`.
 Note: `live.leverage` (exchange setting) does not change backtest results; TWE does.
+
+## Second round (2025 quarterly + 2026 quarterly, 8 windows per variant)
+2025: base +49.6% (worst window -14.2%, DD 57%), safe_nohsl +2.6% (worst -30.9%), safe_hsl25 +14.1% (worst -23.2%).
+2026: base +34.2%, safe_nohsl +24.4%, safe_hsl25 +12.8%. No liquidations. HSL helped in 2025-Q1, hurt in 2026-Q2.
+Hypothesis (unverified): exposure enforcers (reduce_overweight) realize losses in a crash and explain why safe_nohsl
+did worse than base in 2025-Q1. Test: `configs/my_config_safe_noenf.json` = base with ONLY long TWE 1.5 -> 1.0
+(HSL off, both enforcers off, leverage 5). Compare against base, safe_nohsl.
