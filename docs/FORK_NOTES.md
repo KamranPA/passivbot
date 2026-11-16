@@ -15,3 +15,12 @@ Branch `dev/safety-and-tooling` — changes vs. the previous fork state:
 
 Suggested order: run the backtest workflow with `my_config.json` (label `base`) and `my_config_safe.json`
 (label `safe`) over the same windows, compare the summaries, and only then start live with a small balance.
+
+## Backtest variants (added after first results)
+First results (4 windows, 2026-01-01..2026-11-15, OKX): base compounded +35.4% (worst DD 22.5%), safe +10.8%
+(worst DD 14.7%). Safe lost 9.4% in 2026-04..07 where HSL (red_threshold 0.15) fired 10 times.
+To separate the effect of HSL from the exposure cap:
+- `configs/my_config_safe_nohsl.json`: safe config with long HSL off (enforcers + TWE 1.0 + leverage 5 stay).
+- `configs/my_config_safe_hsl25.json`: safe config with long HSL red_threshold 0.15 -> 0.25.
+Run the backtest workflow with the same windows and labels `safe_nohsl` / `safe_hsl25`.
+Note: `live.leverage` (exchange setting) does not change backtest results; TWE does.
