@@ -41,3 +41,11 @@ did worse than base in 2025-Q1. Test: `configs/my_config_safe_noenf.json` = base
 Test 1: continuous 6-month backtests (window_months=6) to see bag recovery.
 Test 2: `configs/my_config_depthcap.json` = base with long `we_excess_allowance_pct` 0.37 -> 0.0
 (per-coin exposure cap 1.5/7 = 0.214 instead of 0.294), everything else identical to my_config.json.
+
+## Continuous 6-month results (base vs depthcap) and next test
+2025-01..07: base +20.6% (DD 57%), depthcap +16.0% (DD 51%). 2026-07..now: base +4.9% (DD 20%), depthcap +2.9% (DD 15.5%).
+Quarterly windows understated base: same 2025 H1 was ~+4.7% as two separate quarters (bags marked to market at window end).
+`close_unstuck` realized -421 vs +209 net realized profit in 2025 H1. Next test on the same two continuous periods:
+- `configs/my_config_unstuck_off.json`: base with long `unstuck.enabled` false
+- `configs/my_config_unstuck_half.json`: base with long `unstuck.loss_allowance_pct` 0.0052 -> 0.0026
+Everything else identical to `my_config.json`.
