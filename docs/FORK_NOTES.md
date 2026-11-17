@@ -31,3 +31,13 @@ Note: `live.leverage` (exchange setting) does not change backtest results; TWE d
 Hypothesis (unverified): exposure enforcers (reduce_overweight) realize losses in a crash and explain why safe_nohsl
 did worse than base in 2025-Q1. Test: `configs/my_config_safe_noenf.json` = base with ONLY long TWE 1.5 -> 1.0
 (HSL off, both enforcers off, leverage 5). Compare against base, safe_nohsl.
+
+## Trade-by-trade findings (base/nohsl, 8 quarterly windows)
+- ~99% of closed position cycles are profitable; avg profit per cycle is tiny ($0.04-0.6 on 1000).
+- Losses in bad windows (2025-Q1, 2026-Q4) are almost entirely UNREALIZED bags at window end
+  (2025-Q1 base: realized +64, equity change -142). Each window starts flat and is marked to market at the end.
+- Deep cycles (>=7 entries) are ~4% of cycles and net ~0; `close_unstuck` realized -1023 (base) over 8 windows.
+- WLD/NEAR/ZEC/AAVE/ARB are the biggest losers; HYPE/ONDO/INJ/FIL the biggest winners (hindsight, not a rule).
+Test 1: continuous 6-month backtests (window_months=6) to see bag recovery.
+Test 2: `configs/my_config_depthcap.json` = base with long `we_excess_allowance_pct` 0.37 -> 0.0
+(per-coin exposure cap 1.5/7 = 0.214 instead of 0.294), everything else identical to my_config.json.
